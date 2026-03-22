@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "rlm-repo-query"
+version = "0.1.0"
+description = "Clone any repo and query it with Recursive Language Models (RLMs)"
+requires-python = ">=3.10"
+dependencies = [
+    "rlms>=0.4.0",
+    "openai>=1.0.0",
+    "anthropic>=0.40.0",
+    "python-dotenv>=1.0.0",
+    "tiktoken>=0.7.0",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[project.scripts]
+rlm-repo = "rlm_repo.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rlm_repo*"]
