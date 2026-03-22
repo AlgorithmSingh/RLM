@@ -38,6 +38,8 @@ rlm-repo streamlit/streamlit -b openai -q "Explain the caching system"
 rlm-repo streamlit/streamlit -b anthropic -q "Explain the caching system"
 rlm-repo streamlit/streamlit -b minimax -q "Explain the caching system"
 rlm-repo streamlit/streamlit -b kimik -q "Explain the caching system"
+rlm-repo streamlit/streamlit -b minimax --max-depth 3 --max-iterations 40 -q "Explain the caching system"
+
 
 # Pick a specific model
 rlm-repo owner/repo -b gemini -m gemini-2.5-pro -q "How does auth work?"
