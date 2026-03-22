@@ -20,6 +20,10 @@ rlm-repo pallets/flask
 
 # CLI: use Anthropic
 rlm-repo streamlit/streamlit -b anthropic -m claude-sonnet-4-20250514 -q "Explain the caching system"
+
+# CLI: use Gemini
+export GEMINI_API_KEY="your-key"
+rlm-repo pallets/markupsafe -b gemini -q "What does this library do?"
 ```
 
 ## Python API
@@ -55,7 +59,7 @@ answer = query_repo("pallets/flask", "How does routing work?")
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-b`, `--backend` | `openai` | LLM backend (`openai`, `anthropic`, `openrouter`, `litellm`) |
+| `-b`, `--backend` | `openai` | LLM backend (`openai`, `anthropic`, `gemini`, `openrouter`, `litellm`) |
 | `-m`, `--model` | `gpt-4o` | Model name |
 | `--max-depth` | `1` | Recursion depth (1 = root + sub-calls) |
 | `--max-iterations` | `20` | Max REPL iterations |
