@@ -58,7 +58,8 @@ This turns the root model into a **strategist** and the sub-LMs into **workers**
 │                     LocalREPL                               │
 │                                                             │
 │   Persistent Python namespace:                              │
-│     globals: llm_query, rlm_query, FINAL_VAR, SHOW_VARS    │
+│     globals: llm_query, llm_query_batched, rlm_query,      │
+│              rlm_query_batched, FINAL_VAR, SHOW_VARS       │
 │     locals:  context (the actual data), any user vars       │
 │                                                             │
 │   exec(code, {**globals, **locals}, {**globals, **locals})  │
@@ -234,6 +235,8 @@ There is **no reward function**. No verifier. No judge model. The system relies 
 
 The root LM's context is **not** just metadata after iteration 0. It accumulates real content rapidly. Here are the actual measurements from our test run (12 chunks, 6,508 total chars):
 
+**Important structural detail:** The user question is **not accumulated** in `message_history`. Each iteration, `build_user_prompt(root_prompt, i, ...)` is appended fresh to create `current_prompt`, but only the assistant response and code execution results are stored back in `message_history` (via `format_iteration()`). This means the previous iteration's question message is replaced, not preserved alongside the new one.
+
 ```
 ITERATION 0 — Root LM context: 3 messages, 11,263 chars
   [system]  ~9,700 chars — full system prompt with REPL instructions
@@ -241,22 +244,25 @@ ITERATION 0 — Root LM context: 3 messages, 11,263 chars
   [user]    "You have not interacted with the REPL environment..."   ← the question
 
 ITERATION 1 — Root LM context: 5 messages, 18,070 chars (+6,807)
-  (everything above PLUS)
+  [system]  (same as above)
+  [user]    metadata (same as above)
   [assistant] "I'll start by exploring..." + ```repl print(context)```
   [user]    "Code executed: ... REPL output: ['=== SUBSYSTEM: Database Layer..."
             ← ALL 6,508 chars of raw context data now in root's context
-  [user]    "The history before..." + question again
+  [user]    "The history before..." + question again  ← REPLACES iter 0 question, not added alongside it
 
 ITERATION 2 — Root LM context: 7 messages, 22,023 chars (+3,953)
-  (everything above PLUS)
+  (first 4 messages above PLUS)
   [assistant] code that printed specific chunks (auth, gateway, billing)
   [user]    REPL output with focused chunk data (re-printed individually)
+  [user]    question again (fresh copy)
 
 ITERATION 3 — Root LM context: 9 messages, 27,309 chars (+5,286)
-  (everything above PLUS)
+  (first 6 messages above PLUS)
   [assistant] composed final answer as variable, printed it
   [user]    REPL output with the compiled answer text
-  — Root LM decides "I have enough" on NEXT iteration → emits FINAL_VAR(answer)
+  [user]    question again (fresh copy)
+  — Root LM decides "I have enough" → emits FINAL_VAR(answer)
 ```
 
 **Key finding (Run 1, small):** By iteration 1, the root LM had ALL the raw data in its context via `print(context)`. No sub-LMs were used at all. Total: 4 iterations, 0 sub-LM calls, 27K chars in root context at termination.
@@ -511,7 +517,7 @@ The REPL-based detection is checked first (`rlm.py:357-360`), then the text-base
 
 **Limitation 2: Small contexts bypass the architecture's key strength.** When the data fits in a single `print()` output (<20K chars), the root LM reads everything directly and never delegates (Run 1: 0 sub-LM calls for 6.5K chars). The sub-LM decomposition only engages for genuinely large inputs (Run 2: 3 sub-LM calls for 14.5M chars).
 
-**Limitation 3: Termination mechanism is fragile.** Run 2 exposed a bug: the model wrote `FINAL(final_explanation)` inside a `repl` block, but `FINAL` wasn't a REPL function. The code raised `NameError`, and the text-regex fallback returned the literal string `"final_explanation"` (17 chars) instead of the 18K-char answer. The model had a complete, high-quality answer ready at iteration 17 but couldn't extract it for 2 more iterations and ultimately failed. **(Fix applied: `FINAL()` is now registered as a REPL function.)**
+**Limitation 3: Termination mechanism is fragile.** Run 2 exposed a bug: the model wrote `FINAL(final_explanation)` inside a `repl` block, but `FINAL` wasn't a REPL function. The code raised `NameError`, and the text-regex fallback returned the literal string `"final_explanation"` (17 chars) instead of the 18K-char answer. The model had a complete, high-quality answer ready at iteration 17 but couldn't extract it for 2 more iterations and ultimately failed. **(Note: `FINAL()` is still NOT registered as a REPL function — only `FINAL_VAR()` is. `FINAL()` is only detected via text-regex fallback in `parsing.py:63-68`, which extracts the raw string inside the parentheses, not a variable's value. The system prompt now documents both `FINAL()` and `FINAL_VAR()` as options, but this same class of bug can still occur if the model writes `FINAL(variable_name)` expecting variable resolution.)**
 
 **Limitation 4: Truncation is brutal.** A single `print(context[:3])` on 3 chunks (725K chars) was truncated to 20K — losing 97.3% of the content. This is by design (it forces delegation), but means any `print()` of large data is nearly useless for direct reading. The root LM must learn to use targeted reads (`context[N][:K]`) or delegate to sub-LMs.
 

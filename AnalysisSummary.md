@@ -108,7 +108,7 @@ One truncation event: **741,926 → 20,000 chars** (lost 97.3%). The first `prin
 
 Run 2 exposed a termination bug: the model wrote `FINAL(final_explanation)` inside a `repl` code block, but `FINAL` was not a REPL function — only `FINAL_VAR` was. The code raised `NameError`, and the text-regex fallback captured the literal string `"final_explanation"` (17 chars) instead of the 18K-char answer stored in that variable.
 
-**Fix already applied:** `FINAL()` is now registered as a REPL function (`self.globals["FINAL"] = self._final`) that accepts a direct value.
+**Note: `FINAL()` is NOT registered as a REPL function** — only `FINAL_VAR()` is (via `self.globals["FINAL_VAR"] = self._final_var`). `FINAL()` is only detected via text-regex fallback in `parsing.py:63-68`, which extracts the raw string inside the parentheses. This means `FINAL("my answer")` works (returns the literal string), but `FINAL(my_variable)` returns the string `"my_variable"`, not the variable's value — the exact bug observed in Run 2.
 
 ### 5. The root LM burned 20 iterations without finishing cleanly
 
