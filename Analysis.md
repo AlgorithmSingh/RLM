@@ -1,6 +1,10 @@
 # RLM: Why the Architecture is Brilliant
 
-> **Empirically verified on 2026-03-22** with MiniMax-M1, max_depth=1, max_iterations=10, 12 synthetic context chunks (6,508 chars total). Full logs in `analysis_logs/`. See `AnalysisSummary.md` for a concise summary of findings.
+> **Empirically verified on 2026-03-22** with two test runs:
+> - **Run 1 (small):** MiniMax-M1, max_depth=1, max_iterations=10, 12 synthetic chunks (6,508 chars). Logs: `analysis_logs/`
+> - **Run 2 (real repo):** MiniMax-M1, max_depth=2, max_iterations=20, streamlit/streamlit: 1,943 files, 153 chunks (14,455,181 chars). Logs: `analysis_logs_repo/`
+>
+> See `AnalysisSummary.md` for a concise summary of findings from both runs.
 
 ## The Core Insight in One Sentence
 
@@ -255,7 +259,19 @@ ITERATION 3 — Root LM context: 9 messages, 27,309 chars (+5,286)
   — Root LM decides "I have enough" on NEXT iteration → emits FINAL_VAR(answer)
 ```
 
-**Key finding:** By iteration 1, the root LM had ALL the raw data in its context via `print(context)`. No sub-LMs were used at all. The root LM read the data itself, identified relevant chunks, composed the answer in Python, and called `FINAL_VAR`. Total: 4 iterations, 0 sub-LM calls, 27K chars in root context at termination.
+**Key finding (Run 1, small):** By iteration 1, the root LM had ALL the raw data in its context via `print(context)`. No sub-LMs were used at all. Total: 4 iterations, 0 sub-LM calls, 27K chars in root context at termination.
+
+**Key finding (Run 2, streamlit/streamlit — 14.5M chars, 153 chunks):** The architecture works completely differently at scale:
+```
+Iteration 0:  3 msgs, 11,625 chars — metadata only
+Iteration 1:  5 msgs, 31,957 chars (+20K) — print(context[:3]) truncated at 20K
+Iteration 5:  13 msgs, 43,934 chars — keyword searching for 'cache' across chunks
+Iteration 10: 23 msgs, 65,872 chars — reading specific cache files
+Iteration 15: 33 msgs, 100,938 chars — sub-LM responses landing
+Iteration 17: 37 msgs, 123,767 chars — 3 llm_query calls completed
+Iteration 19: 41 msgs, 131,441 chars — trying to terminate (hit max iterations)
+```
+At scale: 20 iterations, 3 sub-LM calls (15K, 18K, 1.3K char prompts), 1 truncation event (741K→20K, lost 97.3%), 131K chars in root context. Sub-LM delegation was forced by the 20K truncation limit — the root LM physically could not read the chunks directly.
 
 The key mechanism: `format_iteration()` (`parsing.py:73-105`) appends **full stdout** from code execution (truncated at 20,000 chars per code block) to `message_history`. So `print(context)` or `print(answer)` after an `llm_query()` call puts real data/responses into the root LM's context for all future iterations.
 
@@ -482,10 +498,88 @@ The REPL-based detection is checked first (`rlm.py:357-360`), then the text-base
 
 2. **Code as the interface.** Instead of tool-calling or function-calling APIs, the LM writes Python. This gives it loops, conditionals, variables, string manipulation — the full power of a programming language. **Observed:** The root LM used this to select specific chunks (`context[1]`, `context[2]`, `context[3]`), compose a structured answer as a multi-line string variable, and call `FINAL_VAR(answer)`. No sub-LMs needed — Python itself was sufficient for this task size.
 
-3. **Sub-LMs as the actual readers (for large contexts).** **Correction:** This only activates when the context is too large for the root LM to read directly. In our test (6.5K chars), the root LM handled everything alone — 0 `llm_query` calls, 0 `llm_query_batched` calls, 0 `rlm_query` calls. The sub-LM delegation is emergent behavior driven by context window limits, not a hard architectural constraint.
+3. **Sub-LMs as the actual readers (for large contexts).** **Confirmed in Run 2:** With streamlit/streamlit (14.5M chars), the root LM made 3 `llm_query` calls with 15K-18K char prompts containing actual Python source code. Sub-LMs returned 5K-18K char analyses. The delegation pattern activates when truncation (20K limit) prevents the root LM from reading chunks directly. In Run 1 (6.5K chars), the root LM handled everything alone — 0 sub-LM calls. The delegation is emergent behavior driven by context window pressure.
 
 **Limitation 1: Termination is an uninstructed best guess.** **Confirmed:** The system prompt contains no evaluation criteria (we searched for "evaluate whether", "check if you have enough", "verify your answer", "assess completeness", "stop when", "sufficient information" — none found). The root LM stopped at iteration 3 with a good answer covering all 4 sub-questions, but missed auth-relevant info in chunks it never queried (e.g., chunk 11's JWT tenant_id claim for cross-tenant access prevention). Detection method: `FINAL_VAR_in_REPL`.
 
-**Limitation 2: Small contexts bypass the architecture's key strength.** When the data fits in a single `print()` output (<20K chars), the root LM reads everything directly and never delegates. This means the sub-LM decomposition — the "brilliant" part of the architecture — only engages for genuinely large inputs. For small-to-medium contexts, RLM is essentially an LM with a Python scratchpad.
+**Limitation 2: Small contexts bypass the architecture's key strength.** When the data fits in a single `print()` output (<20K chars), the root LM reads everything directly and never delegates (Run 1: 0 sub-LM calls for 6.5K chars). The sub-LM decomposition only engages for genuinely large inputs (Run 2: 3 sub-LM calls for 14.5M chars).
+
+**Limitation 3: Termination mechanism is fragile.** Run 2 exposed a bug: the model wrote `FINAL(final_explanation)` inside a `repl` block, but `FINAL` wasn't a REPL function. The code raised `NameError`, and the text-regex fallback returned the literal string `"final_explanation"` (17 chars) instead of the 18K-char answer. The model had a complete, high-quality answer ready at iteration 17 but couldn't extract it for 2 more iterations and ultimately failed. **(Fix applied: `FINAL()` is now registered as a REPL function.)**
+
+**Limitation 4: Truncation is brutal.** A single `print(context[:3])` on 3 chunks (725K chars) was truncated to 20K — losing 97.3% of the content. This is by design (it forces delegation), but means any `print()` of large data is nearly useless for direct reading. The root LM must learn to use targeted reads (`context[N][:K]`) or delegate to sub-LMs.
 
 The result: a system that can process arbitrarily large inputs, iteratively refine its approach based on intermediate results, and naturally parallelize work — all without any training, fine-tuning, or reward modeling. The delegation to sub-LMs is an emergent property that scales up with data size, not a fixed pipeline.
+
+---
+
+## 9. What RLM Actually Does (The Honest Version)
+
+Strip away the REPL loop, the recursion depth, the "strategist" framing — what is actually happening at the end of the day?
+
+### The Pipeline
+
+```
+1. os.walk() the repo → read every source file into a flat list
+2. Split that list into ~100K char chunks (sequential, no ranking)
+3. Give the LLM a REPL with the chunks as a variable
+4. The LLM writes code that stuffs chunks into sub-LM calls with the user's question
+5. Sub-LM answers come back → LLM synthesizes → FINAL()
+```
+
+**There is no retrieval.** No BM25, no TF-IDF, no embedding similarity, no keyword ranking. The `index.py` walks the directory tree and reads files in `os.walk` order. The `to_context_chunks()` method packs files sequentially until a chunk hits 100K chars, then starts a new chunk. The ordering is arbitrary — it's directory-walk order, not relevance order.
+
+**There is no filtering.** Every source file that matches the extension list and is under 256KB gets indexed. Test files can be excluded via a flag, but that's it. No static analysis, no dependency graph, no "what files are relevant to auth?" preprocessing.
+
+### What the LLM "Strategy" Actually Looks Like
+
+The system prompt tells the root LM to "write a programmatic strategy" and "break problems into digestible components." In practice, the emergent strategy is almost always one of two patterns:
+
+**Pattern A — Small context (fits in print output, <20K chars):**
+```python
+print(context)  # dump everything into my own context
+# ... read it myself, compose answer, done
+```
+No sub-LM calls. No decomposition. Just "print and read." RLM is an LLM with a Python scratchpad.
+
+**Pattern B — Large context (>20K chars, truncation forces delegation):**
+```python
+# Map: ask the same question over every chunk
+prompts = [f"Answer '{question}' from this chunk:\n{chunk}" for chunk in context]
+answers = llm_query_batched(prompts)
+
+# Reduce: synthesize
+final = llm_query(f"Combine these answers:\n{answers}")
+```
+This is map-reduce. Fan out the user's question to every chunk, collect answers, synthesize. The "programmatic strategy" the LLM writes is the same pattern every time — because it's the obvious thing to do when you have chunks and a question.
+
+### The Only Potentially Novel Behavior: Iterative Refinement
+
+The one thing the REPL loop enables that a simple map-reduce pipeline doesn't:
+
+1. **Keyword filtering before dispatch.** The LLM *can* write code like:
+   ```python
+   for i, c in enumerate(context):
+       if 'auth' in c.lower():
+           print(f"Chunk {i} is relevant")
+   ```
+   Then only send relevant chunks to sub-LMs. This is basic keyword search — `str.__contains__` — not BM25 or anything sophisticated. And it's not guaranteed to happen; it depends on what the LLM decides to write.
+
+2. **Going back for more.** If the first round of sub-LM answers isn't sufficient, the root LM can iterate — query different chunks, ask follow-up questions, dig deeper into a specific chunk. This is the "recursive" part that a one-shot pipeline can't do.
+
+But let's be honest about what "going back" means: the root LM reads the sub-LM answers, compares them against the question (which it sees every iteration), and decides "I need more." Then it writes more code to query more chunks. It's a retry loop with the LLM as the loop condition. Useful, but not magic.
+
+### What RLM Is NOT
+
+- **Not a retrieval system.** No relevance ranking, no embeddings, no search index. Every chunk gets the same treatment unless the LLM happens to write filtering code.
+- **Not a novel decomposition strategy.** The LLM writes the same map-reduce pattern that you'd hardcode in 20 lines of Python. The REPL is the delivery mechanism, not the innovation.
+- **Not "recursive" in most practical cases.** At the default `max_depth=1`, sub-LM calls are one-shot — no REPL, no iteration. The "recursive" part (sub-LMs getting their own REPLs) only activates at `max_depth >= 2`, which is not the default.
+
+### What RLM IS (Charitably)
+
+- **A flexible harness** for letting an LLM decide how to process large context. The REPL loop means the LLM can adapt its strategy based on what it finds — keyword filter, multi-pass, selective deep-dive. Whether it actually does this depends on the model and the question.
+- **A parallelization wrapper.** `llm_query_batched()` fans out to multiple sub-LMs concurrently. This is genuinely useful — processing 10 chunks in parallel is faster than sequential.
+- **A context window multiplier.** Instead of one LLM trying to process 1M chars, you get N sub-LMs each processing ~100K chars. The total "reading capacity" scales with the number of chunks.
+
+### The Bottom Line
+
+RLM's core operation for repo Q&A is: **index all files → chunk sequentially → let the LLM stuff chunks into sub-LM calls with the user's question → synthesize answers.** The REPL loop adds the ability to keyword-filter before dispatch and iterate if the first pass isn't enough. That's the whole thing. The architecture is elegant, but the emergent behavior is straightforward map-reduce with an optional retry loop.
