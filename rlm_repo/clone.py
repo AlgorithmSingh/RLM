@@ -3,7 +3,6 @@
 import os
 import shutil
 import subprocess
-import tempfile
 
 
 def clone_repo(
@@ -29,9 +28,11 @@ def clone_repo(
         repo_url = f"https://github.com/{repo_url}.git"
 
     if target_dir is None:
-        # Extract repo name for a readable temp dir
+        # Extract repo name for a readable cache dir
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
-        target_dir = os.path.join(tempfile.gettempdir(), f"rlm_repo_{repo_name}")
+        cache_dir = os.path.join(os.path.expanduser("~"), ".rlm_repo", "clones")
+        os.makedirs(cache_dir, exist_ok=True)
+        target_dir = os.path.join(cache_dir, repo_name)
 
     # If already cloned, return existing path
     if os.path.isdir(os.path.join(target_dir, ".git")):
