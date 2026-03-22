@@ -67,7 +67,7 @@ answer = query_repo("pallets/flask", "How does routing work?", backend="gemini")
 
 When you run `rlm-repo facebook/react -b gemini -q "How does the reconciler work?"`, here's what happens:
 
-1. **Clone** — `facebook/react` is expanded to `https://github.com/facebook/react.git` and shallow-cloned to `~/.rlm_repo/clones/react`. If it's already there, cloning is skipped.
+1. **Clone** — `facebook/react` is expanded to `https://github.com/facebook/react.git` and shallow-cloned to `.clones/react`. If it's already there, cloning is skipped.
 2. **Index** — walks the repo, reads all source files (`.py`, `.js`, `.ts`, etc.), and builds a structured context string with the directory tree + every file's contents. Large repos get split into chunks (~100K chars each).
 3. **RLM Query** — this is where it gets interesting. Instead of dumping the whole codebase into one LLM prompt, the RLM gives the LLM a Python REPL with the repo loaded as a `context` variable. The LLM then:
    - Writes code to explore and chunk the codebase

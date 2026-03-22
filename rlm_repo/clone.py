@@ -28,9 +28,10 @@ def clone_repo(
         repo_url = f"https://github.com/{repo_url}.git"
 
     if target_dir is None:
-        # Extract repo name for a readable cache dir
+        # Clone into .clones/ inside the project directory
         repo_name = repo_url.rstrip("/").rstrip(".git").split("/")[-1]
-        cache_dir = os.path.join(os.path.expanduser("~"), ".rlm_repo", "clones")
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cache_dir = os.path.join(project_root, ".clones")
         os.makedirs(cache_dir, exist_ok=True)
         target_dir = os.path.join(cache_dir, repo_name)
 
