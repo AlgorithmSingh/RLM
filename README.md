@@ -15,6 +15,8 @@ uv pip install -e .
 export GEMINI_API_KEY="your-key"          # Gemini (default: gemini-2.5-flash)
 # export OPENAI_API_KEY="sk-..."          # OpenAI (default: gpt-4o)
 # export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic (default: claude-sonnet-4-20250514)
+# export MINIMAX_API_KEY="sk-..."         # MiniMax (default: MiniMax-M2.5)
+# export MOONSHOT_API_KEY="sk-..."        # Kimi K2.5 (default: kimi-k2.5)
 
 # Ask a question about any GitHub repo
 rlm-repo pallets/flask -b gemini -q "How does routing work?"
@@ -34,6 +36,8 @@ rlm-repo pallets/flask -b gemini
 # Use a different backend
 rlm-repo streamlit/streamlit -b openai -q "Explain the caching system"
 rlm-repo streamlit/streamlit -b anthropic -q "Explain the caching system"
+rlm-repo streamlit/streamlit -b minimax -q "Explain the caching system"
+rlm-repo streamlit/streamlit -b kimik -q "Explain the caching system"
 
 # Pick a specific model
 rlm-repo owner/repo -b gemini -m gemini-2.5-pro -q "How does auth work?"
@@ -85,8 +89,8 @@ When you run `rlm-repo facebook/react -b gemini -q "How does the reconciler work
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-b`, `--backend` | `openai` | LLM backend (`openai`, `anthropic`, `gemini`, `openrouter`, `litellm`) |
-| `-m`, `--model` | auto | Model name (defaults per backend: `gpt-4o`, `claude-sonnet-4-20250514`, `gemini-2.5-flash`) |
+| `-b`, `--backend` | `openai` | LLM backend (`openai`, `anthropic`, `gemini`, `openrouter`, `litellm`, `minimax`, `kimik`) |
+| `-m`, `--model` | auto | Model name (defaults per backend: `gpt-4o`, `claude-sonnet-4-20250514`, `gemini-2.5-flash`, `MiniMax-M2.5`, `kimi-k2.5`) |
 | `--max-depth` | `1` | Recursion depth (1 = root + sub-calls) |
 | `--max-iterations` | `20` | Max REPL iterations |
 | `--branch` | default | Git branch to clone |
