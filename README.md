@@ -65,7 +65,7 @@ answer = query_repo("pallets/flask", "How does routing work?", backend="gemini")
 
 ## How It Works
 
-1. **Clone** — shallow-clones the repo (or uses a local path)
+1. **Clone** — shallow-clones the repo to `~/.rlm_repo/clones/` (or uses a local path). Re-runs skip cloning if the repo is already cached.
 2. **Index** — walks the file tree, reads source files, builds a structured context with directory tree + file contents
 3. **RLM Query** — passes the context to an RLM, which:
    - Loads the repo into a REPL `context` variable
