@@ -20,7 +20,7 @@ def main():
     parser.add_argument(
         "-b", "--backend",
         default="openai",
-        choices=["openai", "anthropic", "openrouter", "litellm"],
+        choices=["openai", "anthropic", "openrouter", "litellm", "gemini"],
         help="LLM backend (default: openai)",
     )
     parser.add_argument(
@@ -72,6 +72,8 @@ def main():
         backend_kwargs["model_name"] = "gpt-4o"
     elif args.backend == "anthropic":
         backend_kwargs["model_name"] = "claude-sonnet-4-20250514"
+    elif args.backend == "gemini":
+        backend_kwargs["model_name"] = "gemini-2.5-flash"
 
     repo = RepoRLM(
         repo_url=args.repo,
