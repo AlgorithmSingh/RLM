@@ -65,14 +65,21 @@ answer = query_repo("pallets/flask", "How does routing work?", backend="gemini")
 
 ## How It Works
 
-1. **Clone** — shallow-clones the repo to `~/.rlm_repo/clones/` (or uses a local path). Re-runs skip cloning if the repo is already cached.
-2. **Index** — walks the file tree, reads source files, builds a structured context with directory tree + file contents
-3. **RLM Query** — passes the context to an RLM, which:
-   - Loads the repo into a REPL `context` variable
-   - Writes Python code to chunk and search the codebase
-   - Calls `llm_query()` / `llm_query_batched()` on chunks to extract information
-   - Iterates, building up an answer across multiple REPL turns
-   - Returns a final answer via `FINAL()`
+When you run `rlm-repo facebook/react -b gemini -q "How does the reconciler work?"`, here's what happens:
+
+1. **Clone** — `facebook/react` is expanded to `https://github.com/facebook/react.git` and shallow-cloned to `~/.rlm_repo/clones/react`. If it's already there, cloning is skipped.
+2. **Index** — walks the repo, reads all source files (`.py`, `.js`, `.ts`, etc.), and builds a structured context string with the directory tree + every file's contents. Large repos get split into chunks (~100K chars each).
+3. **RLM Query** — this is where it gets interesting. Instead of dumping the whole codebase into one LLM prompt, the RLM gives the LLM a Python REPL with the repo loaded as a `context` variable. The LLM then:
+   - Writes code to explore and chunk the codebase
+   - Calls `llm_query("analyze this chunk...")` to make **sub-LLM calls** on specific parts
+   - Reads the results, writes more code, makes more sub-calls
+   - Repeats across multiple **iterations** (REPL turns) until it has enough info
+   - Returns a final answer
+
+### What `--max-depth` and `--max-iterations` do
+
+- **`--max-iterations`** (default: 20) — how many REPL turns the LLM gets. Each turn it can write code, call sub-LLMs, and read results. More iterations = more thorough analysis, but slower and more API calls.
+- **`--max-depth`** (default: 1) — controls **recursive** sub-calls. At depth 1, the root LLM can call sub-LLMs, but those sub-LLMs just answer directly. At depth 2, sub-LLMs also get their own REPL and can make their own sub-sub-calls. Deeper = handles bigger repos, but costs more.
 
 ## CLI Options
 
