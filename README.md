@@ -7,26 +7,45 @@ Instead of stuffing an entire codebase into a single LLM prompt, RLMs externaliz
 ## Quick Start
 
 ```bash
-pip install -e .
+# Install
+uv venv && source .venv/bin/activate
+uv pip install -e .
 
-# Set your API key
-export OPENAI_API_KEY="sk-..."
+# Set your API key (pick one)
+export GEMINI_API_KEY="your-key"          # Gemini (default: gemini-2.5-flash)
+# export OPENAI_API_KEY="sk-..."          # OpenAI (default: gpt-4o)
+# export ANTHROPIC_API_KEY="sk-ant-..."   # Anthropic (default: claude-sonnet-4-20250514)
 
-# CLI: ask a question about any repo
-rlm-repo streamlit/streamlit -q "How does session state work?"
-
-# CLI: interactive mode
-rlm-repo pallets/flask
-
-# CLI: use Anthropic
-rlm-repo streamlit/streamlit -b anthropic -m claude-sonnet-4-20250514 -q "Explain the caching system"
-
-# CLI: use Gemini
-export GEMINI_API_KEY="your-key"
-rlm-repo pallets/markupsafe -b gemini -q "What does this library do?"
+# Ask a question about any GitHub repo
+rlm-repo pallets/flask -b gemini -q "How does routing work?"
 ```
 
-## Python API
+## Usage
+
+### CLI
+
+```bash
+# One-shot question
+rlm-repo streamlit/streamlit -b gemini -q "How does session state work?"
+
+# Interactive mode — keep asking questions
+rlm-repo pallets/flask -b gemini
+
+# Use a different backend
+rlm-repo streamlit/streamlit -b openai -q "Explain the caching system"
+rlm-repo streamlit/streamlit -b anthropic -q "Explain the caching system"
+
+# Pick a specific model
+rlm-repo owner/repo -b gemini -m gemini-2.5-pro -q "How does auth work?"
+
+# Query a local repo (no cloning)
+rlm-repo /path/to/local/repo -b gemini -q "What does this project do?"
+
+# Deeper recursion for large repos
+rlm-repo facebook/react -b gemini --max-depth 2 --max-iterations 30 -q "How does the reconciler work?"
+```
+
+### Python API
 
 ```python
 from rlm_repo import RepoRLM, query_repo
@@ -34,14 +53,14 @@ from rlm_repo import RepoRLM, query_repo
 # Full control
 repo = RepoRLM(
     repo_url="streamlit/streamlit",
-    backend="openai",
-    backend_kwargs={"model_name": "gpt-4o"},
+    backend="gemini",
+    backend_kwargs={"model_name": "gemini-2.5-flash"},
     verbose=True,
 )
 answer = repo.query("How does Streamlit handle reruns?")
 
 # One-liner
-answer = query_repo("pallets/flask", "How does routing work?")
+answer = query_repo("pallets/flask", "How does routing work?", backend="gemini")
 ```
 
 ## How It Works
@@ -55,17 +74,18 @@ answer = query_repo("pallets/flask", "How does routing work?")
    - Iterates, building up an answer across multiple REPL turns
    - Returns a final answer via `FINAL()`
 
-## Options
+## CLI Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-b`, `--backend` | `openai` | LLM backend (`openai`, `anthropic`, `gemini`, `openrouter`, `litellm`) |
-| `-m`, `--model` | `gpt-4o` | Model name |
+| `-m`, `--model` | auto | Model name (defaults per backend: `gpt-4o`, `claude-sonnet-4-20250514`, `gemini-2.5-flash`) |
 | `--max-depth` | `1` | Recursion depth (1 = root + sub-calls) |
 | `--max-iterations` | `20` | Max REPL iterations |
 | `--branch` | default | Git branch to clone |
-| `--include-tests` | off | Include test files |
-| `--log-dir` | none | Save trajectory logs |
+| `--include-tests` | off | Include test files in the index |
+| `--log-dir` | none | Directory to save trajectory logs |
+| `--no-verbose` | off | Disable rich debug output |
 
 ## References
 
