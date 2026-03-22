@@ -120,6 +120,18 @@ Run 2 hit the max iteration limit (20). The model spent:
 
 The 18K-char answer was ready by iteration 17, but it took 2 more iterations to attempt FINAL — and even then, it failed. The model had 3 iterations of budget left but couldn't figure out the right termination syntax.
 
+### 6. Recursive depth (rlm_query) was never exercised
+
+Run 2 used `max_depth=2`, giving the root LM the ability to spawn child RLMs with their own REPLs via `rlm_query()`. **It never did.** All 3 sub-LM calls used `llm_query()` (one-shot, no REPL).
+
+This means:
+- The `rlm_query` / recursive depth feature is **untested** in our runs
+- The model prefers fast one-shot calls even when deeper reasoning is available
+- `max_depth=2` vs `max_depth=1` made no practical difference in this run
+- Testing `rlm_query` would require either a harder task, explicit prompting, or a model more inclined to use recursive tools
+
+The distinction matters: `llm_query()` is always one-shot regardless of `max_depth`. Only `rlm_query()` spawns a child with its own REPL. The system prompt describes both equally — it doesn't push the model toward one or the other.
+
 ---
 
 ## The System Prompt Around Termination (Exact Text)

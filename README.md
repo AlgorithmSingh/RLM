@@ -87,6 +87,23 @@ When you run `rlm-repo facebook/react -b gemini -q "How does the reconciler work
 - **`--max-iterations`** (default: 20) — how many REPL turns the LLM gets. Each turn it can write code, call sub-LLMs, and read results. More iterations = more thorough analysis, but slower and more API calls.
 - **`--max-depth`** (default: 1) — controls **recursive** sub-calls. At depth 1, the root LLM can call sub-LLMs, but those sub-LLMs just answer directly. At depth 2, sub-LLMs also get their own REPL and can make their own sub-sub-calls. Deeper = handles bigger repos, but costs more.
 
+#### How `--max-depth` works in detail
+
+```
+max_depth=1:  Root LM (REPL, iterates) → sub-LM (one-shot, no REPL)
+max_depth=2:  Root LM (REPL) → child RLM (REPL, iterates) → sub-LM (one-shot)
+max_depth=3:  Root LM (REPL) → child (REPL) → grandchild (REPL) → sub-LM (one-shot)
+```
+
+Two kinds of sub-calls behave differently:
+
+- **`llm_query(prompt)`** — always a one-shot LM call, regardless of depth. Fast, no REPL, no iteration. Use for simple extraction/summarization.
+- **`rlm_query(prompt)`** — spawns a **child RLM** with its own REPL and iteration budget (if depth budget allows). The child can write code, make its own sub-calls, and iterate to find the answer. Falls back to `llm_query` when `depth >= max_depth`.
+
+At `max_depth=1`, `rlm_query()` behaves identically to `llm_query()` — there's no depth budget left for a child REPL. You need `max_depth >= 2` for recursive sub-calls to actually get their own REPLs.
+
+> **Note:** In practice, the root LM often chooses `llm_query()` over `rlm_query()` even when depth budget is available — it's faster and sufficient for most chunk-level analysis. In our test run with `max_depth=2` on streamlit/streamlit, the model made 3 `llm_query()` calls and 0 `rlm_query()` calls.
+
 ## CLI Options
 
 | Flag | Default | Description |

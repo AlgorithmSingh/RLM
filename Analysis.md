@@ -327,15 +327,22 @@ The sub-LMs are the ones actually *reading* and *understanding* the data **for l
 
 **The sub-LMs produce high-quality answers** because each one gets a focused, bounded input — the exact chunk it needs to analyze, with a clear question.
 
-### Recursive Depth Makes This Even More Powerful
+### Recursive Depth Makes This Even More Powerful (In Theory — Not Observed in Practice)
 
-When `max_depth > 1`, sub-LMs get their own REPL loops via `rlm_query()`:
+When `max_depth > 1`, sub-LMs *can* get their own REPL loops via `rlm_query()`:
+
+```
+max_depth=1:  Root (REPL) → sub-LM (one-shot via llm_query or rlm_query)
+max_depth=2:  Root (REPL) → child RLM (REPL) → sub-LM (one-shot)
+max_depth=3:  Root (REPL) → child (REPL) → grandchild (REPL) → sub-LM (one-shot)
+```
+
+The key distinction: `llm_query()` is **always** one-shot regardless of depth. Only `rlm_query()` spawns a child RLM with its own REPL — and only if `depth < max_depth` (`rlm.py:300-301`).
 
 ```
 Root LM (depth=0, strategist)
   │
   ├─ rlm_query("Analyze auth flow in chunk 12")
-  │    │
   │    └─ Child RLM (depth=1, gets its own REPL)
   │         ├─ Iteration 0: explores chunk 12
   │         ├─ Iteration 1: llm_query() to extract details
@@ -343,10 +350,8 @@ Root LM (depth=0, strategist)
   │         └─ returns result to parent
   │
   ├─ rlm_query("Analyze token handling in chunk 31")
-  │    │
   │    └─ Child RLM (depth=1, gets its own REPL)
-  │         ├─ ...same iterative process...
-  │         └─ returns result to parent
+  │         └─ ...same iterative process...
   │
   └─ Root combines results → FINAL(answer)
 ```
@@ -358,6 +363,8 @@ Each child gets:
 - No knowledge of the parent's broader strategy
 
 This is fractal decomposition. Hard problems get recursively broken down until each leaf sub-problem is simple enough for a one-shot LM call.
+
+> **Empirical status: NOT TESTED.** In our Run 2 (max_depth=2, streamlit/streamlit), the root LM made 3 `llm_query()` calls and **0 `rlm_query()` calls** — the recursive depth capability was never exercised. The model chose fast one-shot calls over slower recursive ones, even when depth budget was available. This suggests that the recursive depth feature may require either (a) larger/harder tasks where one-shot answers are insufficient, (b) explicit prompting to encourage `rlm_query()` usage, or (c) a different model that naturally reaches for deeper tools. The `rlm_query` vs `llm_query` choice is entirely up to the model — the system prompt describes both but doesn't push one over the other.
 
 ---
 
