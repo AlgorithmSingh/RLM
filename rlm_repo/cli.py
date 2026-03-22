@@ -57,6 +57,12 @@ def main():
         help="Directory to save trajectory logs",
     )
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="API call timeout in seconds (default: 300)",
+    )
+    parser.add_argument(
         "--no-verbose",
         action="store_true",
         help="Disable verbose output",
@@ -92,6 +98,9 @@ def main():
             backend_kwargs["model_name"] = "claude-sonnet-4-20250514"
         elif args.backend == "gemini":
             backend_kwargs["model_name"] = "gemini-2.5-flash"
+
+    if args.timeout:
+        backend_kwargs["timeout"] = args.timeout
 
     repo = RepoRLM(
         repo_url=args.repo,

@@ -1,8 +1,12 @@
 # RLM: Why the Architecture is Brilliant
 
+> **Empirically verified on 2026-03-22** with MiniMax-M1, max_depth=1, max_iterations=10, 12 synthetic context chunks (6,508 chars total). Full logs in `analysis_logs/`. See `AnalysisSummary.md` for a concise summary of findings.
+
 ## The Core Insight in One Sentence
 
-The root LM never sees the user's data. It only writes *programs* that delegate actual understanding to sub-LMs. This turns the root model into a **strategist** and the sub-LMs into **workers** — and that separation is the whole trick.
+The root LM sees the user's **question** but never sees the user's **data** — *initially*. The raw data lives in a REPL variable, and the root LM can only access it by writing code. For large contexts, this forces delegation to sub-LMs. But for small contexts, the root LM can (and does) bypass delegation entirely by `print(context)` to dump the data into its own conversation history.
+
+This turns the root model into a **strategist** and the sub-LMs into **workers** — but the separation is enforced by context window limits, not by access control.
 
 ---
 
@@ -24,13 +28,13 @@ The root LM never sees the user's data. It only writes *programs* that delegate 
 │      and `rlm_query`. Write ```repl``` code to solve it."   │
 │                                                             │
 │   What it SEES:                                             │
+│     - The user's QUESTION (root_prompt), every iteration    │
 │     - Metadata: "context is a list, 1.2M chars, 47 chunks" │
-│     - root_prompt: "How does auth work?"                    │
 │     - Previous iteration stdout/stderr                      │
 │                                                             │
 │   What it DOES NOT SEE:                                     │
-│     - The actual content of `context`                       │
-│     - The actual responses from sub-LMs (only via print())  │
+│     - The actual content of `context` (the DATA)            │
+│     - Sub-LM responses directly (only via print() output)   │
 │                                                             │
 │   What it PRODUCES:                                         │
 │     ```repl                                                 │
@@ -66,11 +70,14 @@ The root LM never sees the user's data. It only writes *programs* that delegate 
 ┌─────────────────────────────────────────────────────────────┐
 │                  NEXT ITERATION                             │
 │                                                             │
-│   Root LM sees:                                             │
-│     "Code executed: ... REPL output: Chunk 0: Found auth    │
-│      middleware in /src/auth.py... Chunk 1: No auth..."     │
+│   Root LM sees (every iteration):                           │
+│     1. The user's question: "How does auth work?"           │
+│     2. Previous code + REPL output:                         │
+│        "Chunk 0: Found auth middleware in /src/auth.py..."  │
 │                                                             │
-│   Root LM writes more code or calls FINAL(answer)          │
+│   It knows WHAT to answer (the question) and reads          │
+│   print() output to judge WHETHER it has enough info yet.   │
+│   Writes more code or calls FINAL(answer).                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -89,21 +96,29 @@ User: "Here's 500K chars of code. How does auth work?"
 
 ### What RLM Does Instead
 
-The context is loaded into a **Python variable** in the REPL, not into the LM's conversation. The root LM only sees metadata:
+The context is loaded into a **Python variable** in the REPL, not into the LM's conversation. The root LM initially sees only metadata:
 
 ```python
-# prompts.py, line 158
+# prompts.py, line 158 — this is the ONLY data the root LM gets at iteration 0
 metadata_prompt = f"Your context is a {context_type} with {context_total_length} total characters,
                     and is broken up into chunks of char lengths: {context_lengths}."
 ```
 
-The root LM never reads the data. It writes code that *accesses* the data:
+**Verified:** In our test run, the iteration 0 prompt contained exactly this:
+> "Your context is a list with 6508 total characters, and is broken up into chunks of char lengths: [544, 747, 646, 690, 503, 467, 479, 498, 426, 423, 470, 615]."
+
+No raw chunk data appeared in the system prompt or iteration 0 user messages.
+
+**However** — the root LM writes code that *accesses* the data, and when the context is small enough, it can dump everything into its own conversation via `print(context)`:
 
 ```python
-# Root LM's output (it's writing a program, not reading data)
-chunk = context[0:3]
-results = llm_query_batched([f"Analyze: {c}" for c in chunk])
+# What the root LM actually did in our test (iteration 0):
+print(type(context))   # → <class 'list'>
+print(len(context))    # → 12
+print(context)         # → ALL 6,508 chars dumped into REPL output → into root's context
 ```
+
+**This means:** For small contexts, the root LM reads everything directly. The delegation to sub-LMs only becomes necessary when the data exceeds the 20K-char-per-code-block truncation limit or the model's context window.
 
 ### Why This Works So Well
 
@@ -211,16 +226,65 @@ There is **no reward function**. No verifier. No judge model. The system relies 
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### The "Evaluation" Is Just Code Execution
+### What the Root LM's Context Actually Looks Like Over Time (Empirically Observed)
 
-The root LM knows it's doing well because:
+The root LM's context is **not** just metadata after iteration 0. It accumulates real content rapidly. Here are the actual measurements from our test run (12 chunks, 6,508 total chars):
 
-1. **Code either works or throws** — stderr shows tracebacks, the model self-corrects
-2. **print() shows intermediate results** — the model reads its own output and decides next steps
-3. **Variables accumulate** — each iteration builds on previous computations
-4. **The model decides when it's done** — it calls `FINAL()` or `FINAL_VAR()` when satisfied
+```
+ITERATION 0 — Root LM context: 3 messages, 11,263 chars
+  [system]  ~9,700 chars — full system prompt with REPL instructions
+  [user]    "Your context is a list with 6508 total characters..."  ← metadata only
+  [user]    "You have not interacted with the REPL environment..."   ← the question
 
-This is the same feedback loop a human programmer uses. You don't need a reward function when you can just run the code and see if it worked.
+ITERATION 1 — Root LM context: 5 messages, 18,070 chars (+6,807)
+  (everything above PLUS)
+  [assistant] "I'll start by exploring..." + ```repl print(context)```
+  [user]    "Code executed: ... REPL output: ['=== SUBSYSTEM: Database Layer..."
+            ← ALL 6,508 chars of raw context data now in root's context
+  [user]    "The history before..." + question again
+
+ITERATION 2 — Root LM context: 7 messages, 22,023 chars (+3,953)
+  (everything above PLUS)
+  [assistant] code that printed specific chunks (auth, gateway, billing)
+  [user]    REPL output with focused chunk data (re-printed individually)
+
+ITERATION 3 — Root LM context: 9 messages, 27,309 chars (+5,286)
+  (everything above PLUS)
+  [assistant] composed final answer as variable, printed it
+  [user]    REPL output with the compiled answer text
+  — Root LM decides "I have enough" on NEXT iteration → emits FINAL_VAR(answer)
+```
+
+**Key finding:** By iteration 1, the root LM had ALL the raw data in its context via `print(context)`. No sub-LMs were used at all. The root LM read the data itself, identified relevant chunks, composed the answer in Python, and called `FINAL_VAR`. Total: 4 iterations, 0 sub-LM calls, 27K chars in root context at termination.
+
+The key mechanism: `format_iteration()` (`parsing.py:73-105`) appends **full stdout** from code execution (truncated at 20,000 chars per code block) to `message_history`. So `print(context)` or `print(answer)` after an `llm_query()` call puts real data/responses into the root LM's context for all future iterations.
+
+**This means the root LM CAN read data directly** — the separation is enforced by the 20K truncation limit and model context window, not by any access control. For small contexts (<20K chars), the root LM simply dumps and reads everything. For large contexts, truncation forces delegation.
+
+### How the Root LM Decides When It's Done (The Honest Answer — Empirically Verified)
+
+The root LM sees the user's question **every single iteration** — confirmed. In our test, every iteration's last user message contained the full root_prompt text.
+
+**The system prompt never tells it how to evaluate sufficiency.** The only instruction about termination is:
+
+```
+"When you are done with the iterative process, you MUST provide a final
+answer inside a FINAL function when you have completed your task."
+```
+
+**Verified:** We searched the full system prompt (~9,700 chars) for evaluation criteria. The word "sufficient" appears twice but only in the context of "look through it sufficiently" and "is sufficient to just fit it in a few sub-LLM calls" — neither is a termination criterion. There is no "evaluate whether you're done", "check if you have enough", "verify your answer", "assess completeness", or "stop when" instruction. **Contains evaluation criteria? NO.**
+
+**Observed termination behavior:** The model terminated at iteration 3 via `FINAL_VAR(answer)` (detected as `FINAL_VAR_in_REPL`). At that moment, the root LM's context contained 26,615 chars across 8 messages. The model had:
+1. Dumped all context data (iteration 0)
+2. Re-read specific chunks — auth, gateway, billing (iteration 1)
+3. Composed a structured answer as a Python variable (iteration 2)
+4. Called `FINAL_VAR(answer)` (iteration 3)
+
+This is both a strength and a weakness:
+
+- **Strength**: The model used its general intelligence to judge completeness. It identified 4 sub-questions, found the relevant chunks (1, 2, 3), and composed a comprehensive answer covering all 4 points. No rigid criteria needed.
+- **Weakness**: The model never queried chunks 4-11 (notifications, search, deployment, monitoring, data pipeline, file storage, admin, compliance). The compliance chunk (11) contains auth-relevant info (JWT tenant_id claim) that was missed. It stopped based on "feels complete" not "verified complete."
+- **Weakness**: The accumulated print() output can be truncated (20K char limit per code block). In our test, no truncation occurred (total output was under 20K), but with larger contexts this would bite.
 
 ---
 
@@ -228,19 +292,22 @@ This is the same feedback loop a human programmer uses. You don't need a reward 
 
 ### The Root LM is a Programmer, Not a Reader
 
-Here's the critical asymmetry:
+Here's the critical asymmetry — **with an important caveat revealed by our test:**
 
 | | Root LM | Sub-LMs |
 |---|---|---|
-| **Sees the data** | No (only metadata + print output) | Yes (full chunks) |
+| **Sees the question** | Yes (root_prompt, every iteration) | Only what root LM passes in the prompt string |
+| **Sees the data** | **Initially no** (only metadata). But can access it via `print()` — and DOES for small contexts. | Yes (full chunks, via interpolated f-strings) |
 | **Writes code** | Yes (the whole point) | No (just answers) |
 | **Makes strategy decisions** | Yes (how to decompose) | No (just executes) |
-| **Decides what matters** | No | Yes (extracts, summarizes, judges) |
+| **Decides what matters** | **Can do this too** when data is small enough to print | Yes (extracts, summarizes, judges) for large data |
 | **Iterates** | Yes (up to 30 rounds) | No (one-shot via `llm_query`) |
 
-The sub-LMs are the ones actually *reading* and *understanding* the data. The root LM is orchestrating. This separation means:
+**Empirical correction:** In our test (6.5K char context), the root LM made 0 sub-LM calls. It `print(context)` to read all data, identified relevant chunks itself, composed the answer in Python code, and called FINAL_VAR. The sub-LM delegation pattern only activates when the data is too large to fit in print() output (>20K chars per code block).
 
-**The root model scales to arbitrary input sizes** because it never needs to hold the data. It just needs to write code that distributes the data to sub-LMs.
+The sub-LMs are the ones actually *reading* and *understanding* the data **for large contexts**. For small-to-medium contexts, the root LM can and does handle everything alone. This separation means:
+
+**The root model scales to arbitrary input sizes** because *when the data is too large*, it delegates to sub-LMs rather than trying to hold the data. But the delegation is emergent behavior driven by context window pressure, not enforced by architecture.
 
 **The sub-LMs produce high-quality answers** because each one gets a focused, bounded input — the exact chunk it needs to analyze, with a clear question.
 
@@ -307,13 +374,23 @@ That last line is crucial. It tells the root LM: *you can't read the data yourse
 
 Just the shape. Not the content. This is enough for the root LM to write a chunking strategy.
 
-### Layer 3: User Prompt (the nudge each iteration)
+### Layer 3: User Prompt (repeated EVERY iteration — this is how the root LM knows the question)
 
+```python
+# prompts.py:167 — this is appended to every single iteration's prompt
+USER_PROMPT_WITH_ROOT = """Think step-by-step on what to do using the REPL environment
+(which contains the context) to answer the original prompt: \"{root_prompt}\".
+Continue using the REPL environment... Your next action:"""
 ```
-"Think step-by-step on what to do using the REPL environment
- (which contains the context) to answer the original prompt: '{question}'.
- Continue using the REPL environment... Your next action:"
+
+```python
+# rlm.py:341-343 — root_prompt is baked in every iteration
+current_prompt = message_history + [
+    build_user_prompt(root_prompt, i, context_count, history_count)
+]
 ```
+
+This is the crucial piece: **the root LM always knows what question it's answering**. It sees "answer the original prompt: 'How does auth work?'" at the bottom of every single iteration. So when it reads print() output from sub-LMs and sees enough auth-related information, it can judge: "yes, I can now answer 'How does auth work?'" and emit FINAL().
 
 ### Layer 4: Iteration Feedback (what the root LM learns from running code)
 
@@ -329,7 +406,7 @@ Chunk 1: No auth-related code found...
 REPL variables: ['answers', 'chunk', 'auth_files']
 ```
 
-This is the only "reward signal." The root LM reads its own stdout and decides what to do next.
+This is the only "reward signal." The root LM compares this output against the question it sees every iteration (via `root_prompt`) and decides: do I have enough to answer, or do I need more iterations?
 
 ---
 
@@ -397,12 +474,18 @@ The REPL-based detection is checked first (`rlm.py:357-360`), then the text-base
 
 ---
 
-## 8. Summary: The Three Brilliant Decisions
+## 8. Summary: The Three Brilliant Decisions (and Two Honest Limitations)
 
-1. **Context as variable, not conversation.** The data lives in the REPL namespace, not the LM's context window. The root LM writes code to access it, never reads it directly. This decouples reasoning capacity from data size.
+> Updated with empirical data from a live test run (MiniMax-M1, 12 chunks, 6,508 chars, 4 iterations, 0 sub-LM calls).
 
-2. **Code as the interface.** Instead of tool-calling or function-calling APIs, the LM writes Python. This gives it loops, conditionals, variables, string manipulation — the full power of a programming language for expressing decomposition strategies.
+1. **Question visible, data hidden (at first).** The root LM sees the user's question every iteration (via `root_prompt`) — **confirmed: present in all 4 iterations**. The raw data lives in a REPL variable, not the context window — **confirmed: iteration 0 had only metadata, no raw chunk data**. However, the root LM can `print(context)` to pull raw data into its own context — **confirmed: by iteration 1, all 6,508 chars of raw data were in the root LM's history**. The "data hidden" property is enforced by the 20K truncation limit and context window pressure, not by access control.
 
-3. **Sub-LMs as the actual readers.** The root LM is a strategist that never touches the data. Sub-LMs are workers that get focused, bounded inputs. Each layer does what it's best at. The root LM scales to arbitrary input sizes because its job complexity is constant — write a program — regardless of how much data the sub-LMs process.
+2. **Code as the interface.** Instead of tool-calling or function-calling APIs, the LM writes Python. This gives it loops, conditionals, variables, string manipulation — the full power of a programming language. **Observed:** The root LM used this to select specific chunks (`context[1]`, `context[2]`, `context[3]`), compose a structured answer as a multi-line string variable, and call `FINAL_VAR(answer)`. No sub-LMs needed — Python itself was sufficient for this task size.
 
-The result: a system that can process arbitrarily large inputs, iteratively refine its approach based on intermediate results, and naturally parallelize work — all without any training, fine-tuning, or reward modeling. Just an LM writing code in a loop.
+3. **Sub-LMs as the actual readers (for large contexts).** **Correction:** This only activates when the context is too large for the root LM to read directly. In our test (6.5K chars), the root LM handled everything alone — 0 `llm_query` calls, 0 `llm_query_batched` calls, 0 `rlm_query` calls. The sub-LM delegation is emergent behavior driven by context window limits, not a hard architectural constraint.
+
+**Limitation 1: Termination is an uninstructed best guess.** **Confirmed:** The system prompt contains no evaluation criteria (we searched for "evaluate whether", "check if you have enough", "verify your answer", "assess completeness", "stop when", "sufficient information" — none found). The root LM stopped at iteration 3 with a good answer covering all 4 sub-questions, but missed auth-relevant info in chunks it never queried (e.g., chunk 11's JWT tenant_id claim for cross-tenant access prevention). Detection method: `FINAL_VAR_in_REPL`.
+
+**Limitation 2: Small contexts bypass the architecture's key strength.** When the data fits in a single `print()` output (<20K chars), the root LM reads everything directly and never delegates. This means the sub-LM decomposition — the "brilliant" part of the architecture — only engages for genuinely large inputs. For small-to-medium contexts, RLM is essentially an LM with a Python scratchpad.
+
+The result: a system that can process arbitrarily large inputs, iteratively refine its approach based on intermediate results, and naturally parallelize work — all without any training, fine-tuning, or reward modeling. The delegation to sub-LMs is an emergent property that scales up with data size, not a fixed pipeline.
